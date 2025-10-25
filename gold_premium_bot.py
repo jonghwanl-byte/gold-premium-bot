@@ -44,20 +44,29 @@ def get_korean_gold():
     # 1g 당 가격으로 변환 (1돈 = 3.75g)
     return price_per_don / 3.75 
 
+
+===============
 def get_international_gold():
-    # [주의] 이 사이트는 스크래핑 방어가 강력하며, 선택자가 자주 바뀔 수 있습니다.
+    # [주의] Investing.com은 스크래핑 방어가 강력하며, 언제든 다시 오류가 날 수 있습니다.
     url = "https://www.investing.com/commodities/gold"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"} # User-Agent 강화
+
     # 403 Forbidden 에러 방지를 위해 세션 사용 시도 (requests.get 대신)
     with requests.Session() as s:
         response = s.get(url, headers=headers)
         response.raise_for_status() # HTTP 오류 발생 시 예외 발생
         soup = BeautifulSoup(response.text, "html.parser")
         
-        # 2025년 기준 최신 Investing.com 선택자 사용 (변경 가능성 높음)
+        # [수정] 태그 이름에 관계없이 'data-test' 속성만 사용하여 요소를 찾도록 수정
+        # 현재는 <div ...> 이지만, 향후 span이나 다른 태그로 바뀔 수 있음
+        price_element = soup.select_one('[data-test="instrument-price-last"]')
+        
+        if price_element is None:
+            # 요소를 찾지 못하면 명시적으로 오류를 발생시켜 main 함수로 전달
+            raise ValueError("국제 금 시세 요소를 HTML에서 찾을 수 없습니다. (선택자 변경 가능성 높음)")
+            
         # 국제 금 시세: 달러/온스 ($/oz)
-        return float(soup.select_one("span[data-test='instrument-price-last']").text.replace(",", ""))
+        return float(price_element.text.replace(",", ""))
 
 def get_usdkrw():
     url = "https://finance.naver.com/marketindex/"
@@ -188,6 +197,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
