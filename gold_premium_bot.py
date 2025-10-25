@@ -9,8 +9,8 @@ import openai
 from urllib.parse import quote_plus # 텔레그램 메시지 인코딩용
 
 # ---------- 환경 변수 및 초기 설정 ----------
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 # [수정] OpenAI 최신 클라이언트 방식으로 초기화
@@ -26,14 +26,14 @@ DATA_FILE = "gold_premium_history.json"
 def send_telegram_text(msg):
     # 텔레그램 메시지는 URL 인코딩이 필요합니다.
     encoded_msg = quote_plus(msg)
-    requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                 params={"chat_id": TELEGRAM_CHAT_ID, "text": encoded_msg})
+    requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                 params={"chat_id": CHAT_ID, "text": encoded_msg})
 
 def send_telegram_photo(image_bytes, caption=""):
     encoded_caption = quote_plus(caption)
     files = {"photo": image_bytes}
-    data = {"chat_id": TELEGRAM_CHAT_ID, "caption": encoded_caption}
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files=files, data=data)
+    data = {"chat_id": CHAT_ID, "caption": encoded_caption}
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data)
 
 # ---------- 시세 수집 함수 ----------
 def get_korean_gold():
@@ -128,9 +128,9 @@ def analyze_with_ai(today_msg, history):
 # ---------- 메인 로직 ----------
 def main():
     # 0. 초기 환경 변수 확인 (메시지 전송 함수가 작동하는지 확인)
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not BOT_TOKEN or not CHAT_ID:
         # 이 경우 텔레그램 알림 자체가 불가능합니다.
-        print("FATAL ERROR: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set in environment.")
+        print("FATAL ERROR: TELEGRAM BOT_TOKEN or CHAT_ID is not set in environment.")
         return 
         
     try:
@@ -188,5 +188,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
