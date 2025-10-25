@@ -1,1 +1,31 @@
-,,,
+name: Gold Premium AI Bot
+
+on:
+  schedule:
+    - cron: "0 23 * * 1-5"  # UTC 23시 = 한국시간 오전 8시
+    - cron: "50 11 * * *"  # UTC 23시 = 한국시간 오후 9시
+    - cron: "52 11 * * *"  # UTC 23시 = 한국시간 오후 9시
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 matplotlib openai
+
+      - name: Run Gold Premium Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python gold_premium_bot.py
