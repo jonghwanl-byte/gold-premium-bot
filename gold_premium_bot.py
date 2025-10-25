@@ -3,15 +3,18 @@ from bs4 import BeautifulSoup
 import datetime
 import json
 import os
+import telegram
 import matplotlib.pyplot as plt
 from io import BytesIO
 import base64
 import openai
 
 # ---------- 환경 변수 ----------
-TOKEN = os.getenv("8383781992:AAFOrArU4eWETIU9xvBRg3Nhvh0SGe2qhPk")
-CHAT_ID = os.getenv("8366855990")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# GitHub Secret에 설정한 이름 그대로 가져와야 합니다.
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+
 openai.api_key = OPENAI_API_KEY
 DATA_FILE = "gold_premium_history.json"
 
@@ -34,13 +37,13 @@ def get_usdkrw():
 
 # ---------- 텔레그램 ----------
 def send_telegram_text(msg):
-    requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+    requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                  params={"chat_id": CHAT_ID, "text": msg})
 
 def send_telegram_photo(image_bytes, caption=""):
     files = {"photo": image_bytes}
     data = {"chat_id": CHAT_ID, "caption": caption}
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto", files=files, data=data)
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data)
 
 # ---------- 데이터 저장/불러오기 ----------
 def load_history():
@@ -127,3 +130,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
