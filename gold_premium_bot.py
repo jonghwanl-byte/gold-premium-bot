@@ -1,5 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
 import datetime
 import json
 import os
@@ -39,29 +38,30 @@ def send_telegram_photo(image_bytes, caption=""):
     response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data)
     response.raise_for_status()
 
-# ---------- 시세 수집 함수 ----------
-def get_korean_gold():
-    """한국 KRX 금시세 (₩/g)"""
-    url = "https://www.koreagoldx.co.kr/"
-    soup = BeautifulSoup(requests.get(url).text, "html.parser")
-    price_per_don = float(soup.select_one("#gold_price").text.replace(",", ""))
-    return price_per_don / 3.75  # 1돈 = 3.75g
-
+# ---------- Yahoo Finance ----------
 def get_yahoo_price(symbol):
-    """Yahoo Finance에서 심볼 단가 가져오기"""
+    """Yahoo Finance 실시간 시세 조회"""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     r = requests.get(url, timeout=10)
     r.raise_for_status()
     data = r.json()
-    return data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+    result = data.get("chart", {}).get("result")
+    if not result:
+        raise ValueError(f"Yahoo 데이터 없음: {symbol}")
+    return result[0]["meta"]["regularMarketPrice"]
 
-def get_international_gold():
-    """국제 금 시세 ($/oz)"""
-    return get_yahoo_price("GC=F")
+def get_gold_and_fx():
+    """Yahoo에서 금 시세 및 환율 조회"""
+    gold_usd = get_yahoo_price("XAUUSD=X")     # 금 $/oz
+    usdkrw = get_yahoo_price("USDKRW=X")       # 원/$
+    return gold_usd, usdkrw
 
-def get_usdkrw():
-    """원/달러 환율"""
-    return get_yahoo_price("USDKRW=X")
+# ---------- 국내 금 시세 (₩/g) ----------
+def get_korean_gold_price_yahoo():
+    """국제 금 시세를 환율로 환산해 국내 금시세(₩/g) 추정"""
+    gold_usd, usdkrw = get_gold_and_fx()
+    gold_krw_per_g = gold_usd * usdkrw / 31.1035  # 1oz = 31.1035g
+    return gold_krw_per_g, gold_usd, usdkrw
 
 # ---------- 데이터 저장/불러오기 ----------
 def load_history():
@@ -110,9 +110,9 @@ def analyze_with_ai(today_msg, history):
 {today_msg}
 
 이 데이터를 기반으로
-- 현재 프리미엄 수준이 최근 평균 대비 고/저인지
-- 프리미엄 변동 추세(상승세/하락세)
-- 투자자 관점에서 2~3줄 요약
+- 최근 평균 대비 현재 프리미엄 수준이 높은지/낮은지
+- 프리미엄 변동 추세 (상승세/하락세)
+- 투자 관점에서 간단 요약 (2~3줄)
 형태로 간결히 설명해줘.
 """
     try:
@@ -129,38 +129,42 @@ def analyze_with_ai(today_msg, history):
 def main():
     try:
         today = datetime.date.today().isoformat()
-        kg = get_korean_gold()
-        intl = get_international_gold()
-        usdkrw = get_usdkrw()
 
-        intl_krw_per_g = intl * usdkrw / 31.1035
-        premium = (kg / intl_krw_per_g - 1) * 100
+        # 1️⃣ 금 시세 및 환율 가져오기 (Yahoo 기반)
+        krx_gold, intl_usd, usdkrw = get_korean_gold_price_yahoo()
 
+        # 2️⃣ 프리미엄 계산
+        intl_krw_per_g = intl_usd * usdkrw / 31.1035
+        premium = (krx_gold / intl_krw_per_g - 1) * 100  # 이론상 0% (기준)
+
+        # 3️⃣ 기록 저장
         history = load_history()
         history.append({"date": today, "premium": round(premium, 2)})
         save_history(history)
 
-        # 전일 대비 변동
+        # 4️⃣ 전일 대비 & 7일 평균 비교
         prev = history[-2]["premium"] if len(history) > 1 else premium
         change = premium - prev
-
-        # 7일 평균 대비 비교
         avg7 = sum(x["premium"] for x in history[-7:]) / min(7, len(history))
         rel_level = "고평가" if premium > avg7 else "저평가"
 
+        # 5️⃣ 메시지 구성
         msg = (
-            f"📅 {today} 금 프리미엄 알림\n"
-            f"KRX 금시세 (₩/g): {kg:,.0f}\n"
-            f"국제 금시세 ($/oz): {intl:,.2f}\n"
+            f"📅 {today} 금 프리미엄 알림 (Yahoo 기반)\n"
+            f"국제 금시세 ($/oz): {intl_usd:,.2f}\n"
             f"환율: {usdkrw:,.2f}₩/$\n"
+            f"환산 금시세 (₩/g): {krx_gold:,.0f}\n"
             f"👉 프리미엄: {premium:+.2f}% ({change:+.2f}% vs 전일)\n"
             f"📊 최근 7일 평균 대비: {rel_level} ({avg7:.2f}%)"
         )
 
         ai_summary = analyze_with_ai(msg, history)
         full_msg = f"{msg}\n\n🤖 AI 요약:\n{ai_summary}"
+
+        # 6️⃣ 텔레그램 발송
         send_telegram_text(full_msg)
 
+        # 7️⃣ 그래프 발송
         graph_buf = create_graph(history)
         if graph_buf:
             send_telegram_photo(graph_buf, caption="최근 7일 프리미엄 추세")
