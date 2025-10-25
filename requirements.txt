@@ -1,3 +1,4 @@
-openai
-numpy
+requests
+beautifulsoup4
 matplotlib
+openai
