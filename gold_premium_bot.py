@@ -24,10 +24,20 @@ DATA_FILE = "gold_premium_history.json"
 
 # ---------- 텔레그램 ----------
 def send_telegram_text(msg):
-    # 텔레그램 메시지는 URL 인코딩이 필요합니다.
-    encoded_msg = quote_plus(msg)
-    requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                 params={"chat_id": CHAT_ID, "text": encoded_msg})
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    params = {"chat_id": CHAT_ID, "text": quote_plus(msg)}
+    
+    # 요청을 보내고 응답을 받습니다.
+    response = requests.get(url, params=params)
+    
+    # [매우 중요] 디버깅을 위해 응답 상태와 내용을 로그에 출력
+    print(f"--- Telegram API Debug ---")
+    print(f"Status Code: {response.status_code}")
+    print(f"Response JSON: {response.text}")
+    print(f"--------------------------")
+    
+    # HTTP 오류 발생 시 예외를 발생시켜 GitHub Actions에 실패를 알립니다.
+    response.raise_for_status()
 
 def send_telegram_photo(image_bytes, caption=""):
     encoded_caption = quote_plus(caption)
@@ -188,3 +198,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
