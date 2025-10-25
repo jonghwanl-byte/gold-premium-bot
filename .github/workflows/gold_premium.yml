@@ -3,7 +3,7 @@ name: Gold Premium AI Bot
 on:
   schedule:
     - cron: "0 23 * * 1-5"  # UTC 23시 = 한국시간 오전 8시 (월~금)
-    - cron: "0 11 * * 1-5"  # UTC 11시 = 한국시간 오후 8시 (월~금)
+    - cron: "5 14 * * *"  # UTC 11시 = 한국시간 오후 8시 (월~금)
   workflow_dispatch:
 
 jobs:
