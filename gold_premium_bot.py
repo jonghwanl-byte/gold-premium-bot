@@ -44,8 +44,6 @@ def get_korean_gold():
     # 1g 당 가격으로 변환 (1돈 = 3.75g)
     return price_per_don / 3.75 
 
-
-===============
 def get_international_gold():
     # [주의] Investing.com은 스크래핑 방어가 강력하며, 언제든 다시 오류가 날 수 있습니다.
     url = "https://www.investing.com/commodities/gold"
@@ -197,6 +195,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
