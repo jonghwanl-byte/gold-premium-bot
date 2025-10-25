@@ -1,133 +1,175 @@
 import requests
+from bs4 import BeautifulSoup
+import datetime
 import json
 import os
-from datetime import datetime, timedelta
-import numpy as np
+import matplotlib.pyplot as plt
+from io import BytesIO
+import openai
+from urllib.parse import quote_plus
 
-# ---------- 파일 경로 ----------
-DATA_FILE = "premium_history.json"
+# ---------- 환경 변수 및 초기 설정 ----------
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
-# ---------- 1. 시세 수집 ----------
+if not BOT_TOKEN or not CHAT_ID:
+    raise EnvironmentError("필수 환경 변수(TELEGRAM_BOT_TOKEN 또는 CHAT_ID) 누락.")
+
+try:
+    openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+except Exception:
+    openai_client = None
+
+DATA_FILE = "gold_premium_history.json"
+
+# ---------- 텔레그램 ----------
+def send_telegram_text(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    encoded_msg = quote_plus(msg)
+    params = {"chat_id": CHAT_ID, "text": encoded_msg}
+    response = requests.get(url, params=params)
+    print(f"[Telegram] Status {response.status_code}: {response.text}")
+    response.raise_for_status()
+
+def send_telegram_photo(image_bytes, caption=""):
+    encoded_caption = quote_plus(caption)
+    files = {"photo": image_bytes}
+    data = {"chat_id": CHAT_ID, "caption": encoded_caption}
+    response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data)
+    response.raise_for_status()
+
+# ---------- 시세 수집 함수 ----------
 def get_korean_gold():
-    """
-    한국 금 시세 (24K, 1g) – 한국금거래소 or similar site
-    """
-    url = "https://api.manana.kr/exchange/rate.json"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        usd_krw = next((x["rate"] for x in data if x["name"] == "USD/KRW"), None)
-        if not usd_krw:
-            raise ValueError("환율 정보를 찾을 수 없습니다.")
-    except Exception:
-        usd_krw = 1400.0  # fallback
+    """한국 KRX 금시세 (₩/g)"""
+    url = "https://www.koreagoldx.co.kr/"
+    soup = BeautifulSoup(requests.get(url).text, "html.parser")
+    price_per_don = float(soup.select_one("#gold_price").text.replace(",", ""))
+    return price_per_don / 3.75  # 1돈 = 3.75g
 
-    # 참고: goldprice.org 등은 금지되어 있으므로 샘플 API or 수동 설정
-    # 예시로, 1돈(3.75g) = 389,000원 기준 → 1g당 약 103,733원
-    return 103_700.0  # 원/그램 기준 예시
+def get_yahoo_price(symbol):
+    """Yahoo Finance에서 심볼 단가 가져오기"""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    return data["chart"]["result"][0]["meta"]["regularMarketPrice"]
 
 def get_international_gold():
-    """
-    국제 금 시세 (달러/온스) – Yahoo Finance JSON API
-    """
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-    }
+    """국제 금 시세 ($/oz)"""
+    return get_yahoo_price("GC=F")
 
-    response = requests.get(url, headers=headers, timeout=10)
-    response.raise_for_status()
-    data = response.json()
+def get_usdkrw():
+    """원/달러 환율"""
+    return get_yahoo_price("USDKRW=X")
 
-    result = data["chart"]["result"][0]
-    price = result["meta"]["regularMarketPrice"]
-    return float(price)
-
-def get_international_gold_1h_change():
-    """
-    최근 1시간 내 국제 금 시세 변화율(%) 계산
-    """
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=5m&range=1h"
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-    response.raise_for_status()
-    data = response.json()
-    result = data["chart"]["result"][0]
-    closes = result["indicators"]["quote"][0]["close"]
-    closes = [x for x in closes if x is not None]
-    if len(closes) < 2:
-        return 0.0
-    return ((closes[-1] - closes[0]) / closes[0]) * 100
-
-# ---------- 2. 데이터 저장 및 불러오기 ----------
+# ---------- 데이터 저장/불러오기 ----------
 def load_history():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+        with open(DATA_FILE, "r") as f:
             return json.load(f)
     return []
 
-def save_history(history):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+def save_history(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ---------- 3. 프리미엄 계산 ----------
-def calc_premium(kor_gold, intl_gold, usd_krw):
-    """
-    프리미엄(%) = (한국금시세(원/g) - 국제금시세*환율/31.1035) / (국제금시세*환율/31.1035) * 100
-    """
-    intl_per_g = intl_gold * usd_krw / 31.1035
-    premium = (kor_gold - intl_per_g) / intl_per_g * 100
-    return premium, intl_per_g
+# ---------- 그래프 ----------
+def create_graph(history):
+    history = history[-7:]
+    if len(history) < 2:
+        return None
 
-# ---------- 4. 추세 분석 ----------
-def analyze_trend(history):
-    if len(history) < 3:
-        return "데이터 부족"
-    recent = [h["premium"] for h in history[-7:]]
-    diffs = np.diff(recent)
-    trend = np.sign(np.mean(diffs))
-    if trend > 0:
-        return f"상승세 ({sum(d > 0 for d in diffs)}일 상승)"
-    elif trend < 0:
-        return f"하락세 ({sum(d < 0 for d in diffs)}일 하락)"
-    else:
-        return "보합세"
+    dates = [x["date"] for x in history]
+    premiums = [x["premium"] for x in history]
 
-# ---------- 5. 메인 실행 ----------
+    plt.figure(figsize=(6, 3))
+    plt.plot(dates, premiums, marker="o", linewidth=2)
+    plt.title("📈 최근 7일 금 프리미엄 추세 (%)")
+    plt.ylabel("프리미엄(%)")
+    plt.xticks(rotation=45, ha='right')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    plt.close()
+    buf.seek(0)
+    return buf
+
+# ---------- AI 분석 ----------
+def analyze_with_ai(today_msg, history):
+    if not openai_client:
+        return "AI 분석 오류: OpenAI 클라이언트 초기화 실패 (API 키 누락)"
+    
+    prompt = f"""
+다음은 최근 7일간 금 프리미엄 데이터입니다.
+{json.dumps(history[-7:], ensure_ascii=False, indent=2)}
+
+오늘의 주요 데이터:
+{today_msg}
+
+이 데이터를 기반으로
+- 현재 프리미엄 수준이 최근 평균 대비 고/저인지
+- 프리미엄 변동 추세(상승세/하락세)
+- 투자자 관점에서 2~3줄 요약
+형태로 간결히 설명해줘.
+"""
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"AI 분석 오류: {e}"
+
+# ---------- 메인 ----------
 def main():
     try:
-        kor_gold = get_korean_gold()
-        intl_gold = get_international_gold()
-        usd_krw = 1400.0  # 환율 고정 or API 연동 가능
-        intl_change_1h = get_international_gold_1h_change()
+        today = datetime.date.today().isoformat()
+        kg = get_korean_gold()
+        intl = get_international_gold()
+        usdkrw = get_usdkrw()
 
-        premium, intl_per_g = calc_premium(kor_gold, intl_gold, usd_krw)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        intl_krw_per_g = intl * usdkrw / 31.1035
+        premium = (kg / intl_krw_per_g - 1) * 100
 
         history = load_history()
-        history.append({"time": now, "premium": premium})
+        history.append({"date": today, "premium": round(premium, 2)})
         save_history(history)
 
-        last7 = [h["premium"] for h in history[-7:]]
-        avg7 = sum(last7) / len(last7) if last7 else premium
-        diff_vs_avg = premium - avg7
-        level = "📈 평균보다 높음" if diff_vs_avg > 0 else "📉 평균보다 낮음"
+        # 전일 대비 변동
+        prev = history[-2]["premium"] if len(history) > 1 else premium
+        change = premium - prev
 
-        trend_text = analyze_trend(history)
+        # 7일 평균 대비 비교
+        avg7 = sum(x["premium"] for x in history[-7:]) / min(7, len(history))
+        rel_level = "고평가" if premium > avg7 else "저평가"
 
-        print(f"⏰ {now}")
-        print(f"🇰🇷 국내 금 시세: {kor_gold:,.0f}원/g")
-        print(f"🌎 국제 금 시세: ${intl_gold:,.2f}/oz ({intl_change_1h:+.2f}%)")
-        print(f"💱 환율: {usd_krw:,.1f}원/USD")
-        print(f"💰 국제 금 (환산): {intl_per_g:,.0f}원/g")
-        print(f"📈 프리미엄: {premium:+.2f}%")
-        print(f"📊 최근 7일 평균 대비: {diff_vs_avg:+.2f}% ({level})")
-        print(f"📉 최근 추세: {trend_text}")
+        msg = (
+            f"📅 {today} 금 프리미엄 알림\n"
+            f"KRX 금시세 (₩/g): {kg:,.0f}\n"
+            f"국제 금시세 ($/oz): {intl:,.2f}\n"
+            f"환율: {usdkrw:,.2f}₩/$\n"
+            f"👉 프리미엄: {premium:+.2f}% ({change:+.2f}% vs 전일)\n"
+            f"📊 최근 7일 평균 대비: {rel_level} ({avg7:.2f}%)"
+        )
+
+        ai_summary = analyze_with_ai(msg, history)
+        full_msg = f"{msg}\n\n🤖 AI 요약:\n{ai_summary}"
+        send_telegram_text(full_msg)
+
+        graph_buf = create_graph(history)
+        if graph_buf:
+            send_telegram_photo(graph_buf, caption="최근 7일 프리미엄 추세")
 
     except Exception as e:
-        print(f"🔥 오류 발생: {e}")
+        try:
+            send_telegram_text(f"🔥 오류 발생: {e}")
+        except Exception:
+            print(f"치명적 오류 발생: {e}")
 
-# ---------- 실행 ----------
 if __name__ == "__main__":
     main()
