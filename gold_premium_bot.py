@@ -3,7 +3,6 @@ from bs4 import BeautifulSoup
 import datetime
 import json
 import os
-import telegram
 import matplotlib.pyplot as plt
 from io import BytesIO
 import base64
@@ -130,4 +129,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
