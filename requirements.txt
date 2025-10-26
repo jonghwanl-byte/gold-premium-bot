@@ -3,4 +3,3 @@ beautifulsoup4
 matplotlib
 openai
 yfinance
-selenium # <--- Selenium 추가
