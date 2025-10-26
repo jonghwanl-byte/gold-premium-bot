@@ -56,11 +56,20 @@ def get_korean_gold_data():
     try:
         ticker = yf.Ticker(symbol)
         data = ticker.info
+        
         market_price = data.get('regularMarketPrice') # 현재 시장 가격 (원/주)
         nav_price = data.get('navPrice')              # 순자산가치 (NAV)
         
-        if market_price is None or nav_price is None:
-             raise ValueError(f"Yahoo Finance: '{symbol}'의 시장가 또는 NAV 데이터가 누락되었습니다.")
+        # ⚠️ (수정) 실시간 가격이 없으면 직전 종가를 사용 (장외 시간 대응)
+        if market_price is None:
+            market_price = data.get('previousClose')
+            
+        # 시장 가격과 NAV가 모두 없으면 치명적인 오류 발생
+        if market_price is None:
+             raise ValueError(f"Yahoo Finance: '{symbol}'의 유효한 시장 가격(실시간 또는 종가)을 찾을 수 없습니다. 시장 휴장 가능성이 높습니다.")
+        
+        if nav_price is None:
+             raise ValueError(f"Yahoo Finance: '{symbol}'의 NAV 데이터가 누락되었습니다. (장외 시간/API 오류)")
              
         return market_price, nav_price
     except Exception as e:
@@ -71,10 +80,13 @@ def get_yahoo_price(symbol):
     try:
         ticker = yf.Ticker(symbol)
         data = ticker.info
+        # 환율이나 국제 금 시세도 장외 시간에 regularMarketPrice가 없을 수 있으므로 종가 대체 로직 추가
         price = data.get('regularMarketPrice')
-        
         if price is None:
-             raise ValueError(f"Yahoo Finance: '{symbol}'에 대한 실시간 시장 가격(regularMarketPrice) 데이터가 누락되었습니다.")
+             price = data.get('previousClose')
+             
+        if price is None:
+             raise ValueError(f"Yahoo Finance: '{symbol}'에 대한 가격 데이터가 누락되었습니다.")
              
         return price
     except Exception as e:
@@ -85,13 +97,11 @@ def get_gold_and_fx():
     usd_krw = get_yahoo_price("USDKRW=X") # 원/$
     gold_usd = get_yahoo_price("GC=F")    # 국제 금 선물 가격 ($/oz)
     
-    # ACE ETF 시장가와 NAV를 가져옵니다.
     market_price, nav_price = get_korean_gold_data() 
     
-    # 국제 금 환산가 자리에 NAV 가격을 대입합니다. (정확한 비교 기준)
     return market_price, nav_price, usd_krw, gold_usd
 
-# ---------- 데이터 처리 및 분석 (로직 유지) ----------
+# ---------- 데이터 처리 및 분석 (기존과 동일) ----------
 def load_history():
     if os.path.exists(DATA_FILE):
         try:
@@ -107,8 +117,6 @@ def save_history(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def calc_premium():
-    # market_price: 국내 ETF 시장 가격 (원/주)
-    # nav_price: ETF의 이론적 가치 (NAV, 원/주)
     market_price, nav_price, usd_krw, gold_usd = get_gold_and_fx()
     
     # 괴리율 계산: (시장가 / NAV - 1) * 100
@@ -166,7 +174,7 @@ def analyze_with_ai(today_msg, history):
     except Exception as e:
         return f"AI 분석 오류: {e}"
 
-# ---------- 메인 로직 (메시지 내용 수정) ----------
+# ---------- 메인 로직 (기존과 동일) ----------
 def main():
     try:
         today = datetime.date.today().isoformat()
@@ -191,7 +199,6 @@ def main():
         level = "고평가" if info["premium"] > avg7 else "저평가"
         trend = "📈 상승세" if change > 0 else "📉 하락세"
         
-        # ⚠️ 메시지 내용에 NAV를 명시하여 정확도를 높임
         msg_data = (
             f"📅 {today} ACE KRX금현물 ETF 괴리율 알림\n"
             f"국내 ETF 시장가 (주당): {info['korean']:,.0f}원\n"
