@@ -5,21 +5,24 @@ import os
 import json
 import openai
 from urllib.parse import quote_plus
-from bs4 import BeautifulSoup
+# from bs4 import BeautifulSoup # BeautifulSoup은 이제 KRX 스크래핑에 사용하지 않음
 import matplotlib.pyplot as plt
 from io import BytesIO
-import yfinance as yf # yfinance 라이브러리 추가
+import yfinance as yf 
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 
 # ---------- 환경 변수 및 초기 설정 ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# 필수 환경 변수 누락 시 즉시 종료 (텔레그램 알림도 불가능한 상태)
 if not BOT_TOKEN or not CHAT_ID:
     raise EnvironmentError("FATAL ERROR: TELEGRAM_BOT_TOKEN or CHAT_ID is not set in environment.")
 
-# OpenAI 클라이언트 초기화
 try:
     openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 except Exception:
@@ -27,7 +30,7 @@ except Exception:
 
 DATA_FILE = "gold_premium_history.json"
 
-# ---------- 텔레그램 (디버깅 로직 포함) ----------
+# ---------- 텔레그램 함수 (기존과 동일) ----------
 def send_telegram_text(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     encoded_msg = quote_plus(msg)
@@ -36,7 +39,6 @@ def send_telegram_text(msg):
     try:
         r = requests.post(url, json=payload, timeout=10)
         
-        # [디버깅 로그] 텔레그램 API 응답을 출력 (문제 발생 시 원인 파악용)
         print(f"\n--- Telegram API Debug ---")
         print(f"Status Code: {r.status_code}")
         print(f"Response JSON: {r.text}")
@@ -54,38 +56,57 @@ def send_telegram_photo(image_bytes, caption=""):
     response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=10)
     response.raise_for_status()
 
-# ---------- 시세 수집 함수 ----------
+# ---------- 시세 수집 함수 (Selenium 적용) ----------
 
-# 1. KRX 국내 금 시세 (원/g) - 스크래핑 셀렉터 재재수정 반영
+# 1. KRX 국내 금 시세 (원/g) - Selenium 사용
 def get_korean_gold():
     url = "https://www.koreagoldx.co.kr/"
+    
+    # 1. Chrome 옵션 설정 (GitHub Actions 환경을 위한 Headless 설정)
+    chrome_options = ChromeOptions()
+    chrome_options.add_argument("--headless")              # GUI 없이 실행
+    chrome_options.add_argument("--no-sandbox")            # 리눅스 환경 필수
+    chrome_options.add_argument("--disable-dev-shm-usage") # 메모리 부족 문제 방지
+    
+    # 2. WebDriver 경로 설정 (GitHub Actions의 setup-chrome 액션 사용)
+    service = ChromeService() 
+    driver = None
+    
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
+        # 3. WebDriver 실행
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(30) # 페이지 로딩 타임아웃 30초
+        driver.get(url)
+
+        # 4. 데이터 추출: 페이지가 로드되고 JavaScript가 실행되기를 기다린 후 #buy_price를 찾습니다.
+        # #buy_price ID가 다시 변경되었을 가능성을 고려하여, 대기 시간을 통해 페이지 로딩을 확실히 합니다.
+        time.sleep(5) # 5초 대기 (데이터 로딩 시간 확보)
+
+        # 5. 요소 찾기: 1돈(3.75g) 살 때 가격을 나타내는 #buy_price ID를 다시 시도합니다.
+        # Selenium은 CSS Selector 대신 XPath나 By.ID를 사용하는 것이 더 명확합니다.
+        gold_price_element = driver.find_element(By.ID, "buy_price")
         
-        # ⚠️ (재재수정된 셀렉터) ID 대신 div.info_price 내의 모든 <em> 태그를 가져옵니다.
-        price_elements = soup.select("div.info_price em") 
+        if not gold_price_element:
+             raise NoSuchElementException("Selenium이 #buy_price 요소를 찾지 못했습니다.")
 
-        if not price_elements:
-             # 요소가 아예 없는 경우
-             raise ValueError("KRX 금 시세 요소('div.info_price em')를 찾지 못했습니다. 웹사이트 구조가 완전히 변경되었을 수 있습니다.")
-             
-        # 첫 번째 <em> 태그의 텍스트를 1돈 가격으로 간주합니다.
-        price_per_don_text = price_elements[0].text.replace(",", "").strip()
+        price_per_don_text = gold_price_element.text.replace(",", "").strip()
 
-        # 추출된 값이 숫자인지 확인하는 로직 추가
-        if not price_per_don_text.isdigit():
-             raise ValueError(f"추출된 금 시세 값 '{price_per_don_text}'이(가) 유효한 숫자가 아닙니다. 웹사이트 데이터 오류.")
+        if not price_per_don_text or not price_per_don_text.isdigit():
+             raise ValueError(f"추출된 금 시세 값 '{price_per_don_text}'이(가) 유효한 숫자가 아닙니다.")
              
         price_per_don = float(price_per_don_text)
         
         return price_per_don / 3.75 # 원/g으로 환산
-    except Exception as e:
-        # 오류가 발생하면, 호출한 쪽(get_gold_and_fx)에서 처리할 수 있도록 명확한 RuntimeError 발생
-        raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패: {type(e).__name__} - {e}")
 
-# 2. Yahoo Finance 가격 조회 (yfinance 사용) - 데이터 누락 처리 강화
+    except (NoSuchElementException, TimeoutException, WebDriverException, ValueError) as e:
+        # 모든 Selenium 관련 오류 및 값 오류 처리
+        raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): {type(e).__name__} - {e}")
+    finally:
+        # WebDriver는 반드시 닫아야 합니다. (리소스 해제)
+        if driver:
+            driver.quit()
+
+# 2. Yahoo Finance 가격 조회 (기존과 동일)
 def get_yahoo_price(symbol):
     try:
         ticker = yf.Ticker(symbol)
@@ -93,50 +114,40 @@ def get_yahoo_price(symbol):
         price = data.get('regularMarketPrice')
         
         if price is None:
-             # (개선) 가격 데이터 누락 시 오류 메시지 구체화
              raise ValueError(f"Yahoo Finance: '{symbol}'에 대한 실시간 시장 가격(regularMarketPrice) 데이터가 누락되었습니다.")
              
         return price
     except Exception as e:
-        # 오류가 발생하면, 호출한 쪽(get_gold_and_fx)에서 처리할 수 있도록 명확한 RuntimeError 발생
         raise RuntimeError(f"Yahoo Finance '{symbol}' 데이터 조회 실패: {type(e).__name__} - {e}")
 
-# 3. 국제 금 시세 및 환율 가져오기
+# 3. 국제 금 시세 및 환율 가져오기 (기존과 동일)
 def get_gold_and_fx():
-    # 1. Yahoo Finance를 통해 환율 및 국제 금 선물 가격을 가져옵니다.
-    usd_krw = get_yahoo_price("USDKRW=X") # 원/$
-    gold_usd = get_yahoo_price("GC=F")    # 국제 금 선물 가격 ($/oz)
+    usd_krw = get_yahoo_price("USDKRW=X")
+    gold_usd = get_yahoo_price("GC=F")
     
-    # 2. 국제 금 시세를 KRW/g으로 환산 (1oz = 31.1035g)
     intl_krw_per_g = gold_usd * usd_krw / 31.1035
     
-    # 3. KRX 국내 금 시세 (원/g)를 가져옴
-    krx_gold_per_g = get_korean_gold()
+    krx_gold_per_g = get_korean_gold() # Selenium을 통해 국내 금 시세 가져오기
 
     return krx_gold_per_g, intl_krw_per_g, usd_krw, gold_usd
 
-# ---------- 데이터 처리 및 분석 ----------
+# ---------- 데이터 처리 및 분석 (기존과 동일) ----------
 def load_history():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r") as f:
                 return json.load(f)
         except json.JSONDecodeError:
-            # 파일이 비어있거나 손상된 경우
             return []
     return []
 
 def save_history(data):
-    # history는 최근 100개까지만 저장하여 파일 크기 관리
     data = data[-100:]
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def calc_premium():
-    # 시세 데이터를 모두 가져옵니다. (여기서 오류가 발생하면 main 함수에서 처리됨)
     korean_gold, intl_krw, usd_krw, gold_usd = get_gold_and_fx()
-    
-    # 프리미엄 계산: (국내 금 가격 / 국제 금 환산 가격 - 1) * 100
     premium = (korean_gold / intl_krw - 1) * 100 
     
     return {
@@ -148,10 +159,8 @@ def calc_premium():
     }
 
 def create_graph(history):
-    # 최근 7일 데이터만 사용
     history = history[-7:]
-    if len(history) < 2:
-        return None
+    if len(history) < 2: return None
         
     dates = [x["date"] for x in history]
     premiums = [x["premium"] for x in history]
@@ -193,18 +202,15 @@ def analyze_with_ai(today_msg, history):
     except Exception as e:
         return f"AI 분석 오류: {e}"
 
-# ---------- 메인 로직 ----------
+# ---------- 메인 로직 (기존과 동일) ----------
 def main():
     try:
         today = datetime.date.today().isoformat()
         
-        # 1. 모든 데이터 수집 및 프리미엄 계산
         info = calc_premium()
 
-        # 2. 히스토리 관리
         history = load_history()
         
-        # 오늘 날짜 데이터가 이미 있으면 업데이트 (재실행 대비)
         if history and history[-1]["date"] == today:
             history[-1] = {"date": today, "premium": round(info["premium"], 2)}
         else:
@@ -212,8 +218,6 @@ def main():
             
         save_history(history)
 
-        # 3. 데이터 분석 및 메시지 구성
-        # 전일 데이터는 오늘 데이터 직전의 유효한 데이터로 찾음
         prev_premium_data = [h for h in history if h["date"] != today]
         prev = prev_premium_data[-1]["premium"] if prev_premium_data else info["premium"]
         change = info["premium"] - prev
@@ -235,21 +239,16 @@ def main():
         ai_summary = analyze_with_ai(msg_data, history)
         full_msg = f"{msg_data}\n\n🤖 AI 요약:\n{ai_summary}"
 
-        # 4. 텔레그램 전송
         send_telegram_text(full_msg)
 
-        # 5. 그래프 전송
         graph_buf = create_graph(history)
         if graph_buf:
             send_telegram_photo(graph_buf, caption="📈 최근 7일 금 프리미엄 추세")
 
     except Exception as e:
-        # 최종 예외 처리: 모든 시세 수집 및 계산 오류를 여기서 포착
         try:
-            # 어떤 함수에서 오류가 발생했는지 명시
             send_telegram_text(f"🔥 치명적인 오류 발생: {type(e).__name__} - {e}")
         except Exception as telegram_error:
-            # 텔레그램 발송 자체가 실패하면 GitHub 로그에만 출력
             print(f"ERROR: 최종 오류 알림 발송 실패: {telegram_error}")
             print(f"Original Exception: {e}")
 
