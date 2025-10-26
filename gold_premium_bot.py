@@ -3,18 +3,18 @@ import time
 import datetime
 import os
 import json
-import openai
 from urllib.parse import quote_plus
-from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
 from io import BytesIO
 import yfinance as yf 
+import openai
 
 # ---------- 환경 변수 및 초기 설정 ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# 필수 환경 변수 누락 시 즉시 종료
 if not BOT_TOKEN or not CHAT_ID:
     raise EnvironmentError("FATAL ERROR: TELEGRAM_BOT_TOKEN or CHAT_ID is not set in environment.")
 
@@ -51,45 +51,23 @@ def send_telegram_photo(image_bytes, caption=""):
     response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=10)
     response.raise_for_status()
 
-# ---------- 시세 수집 함수 ----------
+# ---------- 시세 수집 함수 (Yahoo Finance ETF 중심) ----------
 
-# 1. KRX 국내 금 시세 (원/g) - 네이버 금융 스크래핑으로 전환 및 2단계 셀렉터 검증 적용
-def get_korean_gold():
-    url = "https://finance.naver.com/marketindex/goldDetail.naver" 
-    
+# 1. 국내 금 가격 대용: ACE KRX금현물 ETF 실시간 가격 (원/주)
+def get_korean_gold_proxy():
+    # ACE KRX금현물 종목코드 (가장 안정적인 실시간 국내 금 가격 대용)
+    symbol = "411060.KS" 
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        response = requests.get(url, timeout=10, headers=headers)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
+        ticker = yf.Ticker(symbol)
+        data = ticker.info
+        price = data.get('regularMarketPrice') # 현재 시장 가격 (원/주)
         
-        # 1단계 시도: 가장 일반적인 가격 값 셀렉터 (span.value)
-        price_element = soup.select_one("span.value")
-        
-        if price_element is None:
-             # 2단계 시도: 상위 요소(dd.data)를 찾고 그 텍스트에서 가격만 추출
-             data_element = soup.select_one("dd.data")
-             if data_element:
-                 # dd.data의 텍스트를 공백으로 분리하여 첫 번째 요소를 가격으로 간주
-                 price_parts = data_element.get_text(separator=' ', strip=True).split()
-                 if price_parts:
-                     price_text = price_parts[0]
-                     # 추출된 텍스트가 가격 형태인지 확인 (콤마 제거 후 숫자 확인)
-                     clean_text = price_text.replace(',', '').replace('.', '')
-                     if clean_text.isdigit():
-                        krx_gold_per_g = float(price_text.replace(",", "").strip())
-                        return krx_gold_per_g
+        if price is None:
+             raise ValueError(f"Yahoo Finance: '{symbol}'에 대한 실시간 시장 가격(regularMarketPrice) 데이터가 누락되었습니다.")
              
-             # 두 가지 시도 모두 실패 시 오류 발생
-             raise ValueError("네이버 금융 페이지에서 KRX 금 시세 요소를 찾지 못했습니다. 구조가 변경되었거나 데이터가 없습니다.")
-
-        # 1단계 시도 성공 시 처리
-        krx_gold_per_g = float(price_element.text.replace(",", "").strip())
-        
-        return krx_gold_per_g # 원/g
-        
+        return price
     except Exception as e:
-        raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (네이버 금융): {type(e).__name__} - {e}")
+        raise RuntimeError(f"KRX 골드 ETF 가격 조회 실패: {type(e).__name__} - {e}")
 
 # 2. Yahoo Finance 가격 조회 (기존과 동일)
 def get_yahoo_price(symbol):
@@ -105,16 +83,21 @@ def get_yahoo_price(symbol):
     except Exception as e:
         raise RuntimeError(f"Yahoo Finance '{symbol}' 데이터 조회 실패: {type(e).__name__} - {e}")
 
-# 3. 국제 금 시세 및 환율 가져오기 (기존과 동일)
+# 3. 국제 금 시세 및 환율 가져오기
 def get_gold_and_fx():
-    usd_krw = get_yahoo_price("USDKRW=X")
-    gold_usd = get_yahoo_price("GC=F")
+    usd_krw = get_yahoo_price("USDKRW=X") # 원/$
+    gold_usd = get_yahoo_price("GC=F")    # 국제 금 선물 가격 ($/oz)
     
-    intl_krw_per_g = gold_usd * usd_krw / 31.1035
+    # 2. 국내 금 ETF 가격 (원/주)를 가져옵니다.
+    krx_gold_etf_krw = get_korean_gold_proxy() 
     
-    krx_gold_per_g = get_korean_gold() 
+    # 3. 국제 금 시세를 국내 ETF 단위(KRW/주)로 환산합니다.
+    # ACE KRX금현물의 정확한 1주당 추종 비율(oz/share)은 공시를 확인해야 하나,
+    # 괴리율의 추이 분석을 위해 국제 가격 환산치를 구합니다. (0.001oz 추정치 유지)
+    oz_per_share_proxy = 0.001 
+    intl_krw_per_etf = gold_usd * oz_per_share_proxy * usd_krw 
 
-    return krx_gold_per_g, intl_krw_per_g, usd_krw, gold_usd
+    return krx_gold_etf_krw, intl_krw_per_etf, usd_krw, gold_usd
 
 # ---------- 데이터 처리 및 분석 (기존과 동일) ----------
 def load_history():
@@ -132,12 +115,16 @@ def save_history(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def calc_premium():
-    korean_gold, intl_krw, usd_krw, gold_usd = get_gold_and_fx()
-    premium = (korean_gold / intl_krw - 1) * 100 
+    # krx_gold_etf_krw: 국내 ETF 시장 가격 (원/주)
+    # intl_krw_per_etf: 국제 금 시세 환산 NAV 가격 (원/주 환산)
+    krx_gold_etf_krw, intl_krw_per_etf, usd_krw, gold_usd = get_gold_and_fx()
+    
+    # 프리미엄(괴리율) 계산
+    premium = (krx_gold_etf_krw / intl_krw_per_etf - 1) * 100 
     
     return {
-        "korean": korean_gold,
-        "international_krw": intl_krw,
+        "korean": krx_gold_etf_krw, # KRW/주 (국내 시장 가격)
+        "international_krw": intl_krw_per_etf, # KRW/주 환산 (국제 가격)
         "usd_krw": usd_krw,
         "gold_usd": gold_usd,
         "premium": premium
@@ -152,8 +139,8 @@ def create_graph(history):
 
     plt.figure(figsize=(6, 3))
     plt.plot(dates, premiums, marker="o")
-    plt.title("금 프리미엄 7일 추세 (%)")
-    plt.ylabel("프리미엄(%)")
+    plt.title("ETF 괴리율 7일 추세 (%)") # 그래프 제목 수정
+    plt.ylabel("괴리율(%)")
     plt.xticks(rotation=45, ha='right')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -169,13 +156,13 @@ def analyze_with_ai(today_msg, history):
           return "AI 분석 오류: OpenAI 클라이언트 초기화 실패 (API 키 누락)"
           
     prompt = f"""
-다음은 최근 7일간의 금 프리미엄 데이터입니다.
+다음은 최근 7일간의 ETF 괴리율 데이터입니다.
 {json.dumps(history[-7:], ensure_ascii=False, indent=2)}
 
 오늘의 주요 데이터:
 {today_msg}
 
-이 데이터를 기반으로 한국 금 프리미엄 상승/하락 원인과 간단한 투자 관점 요약을 3줄 이내로 설명해줘.
+이 데이터를 기반으로 ACE KRX금현물 ETF의 괴리율 상승/하락 원인과 간단한 투자 관점 요약을 3줄 이내로 설명해줘.
 """
     try:
         response = openai_client.chat.completions.create( 
@@ -187,7 +174,7 @@ def analyze_with_ai(today_msg, history):
     except Exception as e:
         return f"AI 분석 오류: {e}"
 
-# ---------- 메인 로직 (기존과 동일) ----------
+# ---------- 메인 로직 (메시지 내용 수정) ----------
 def main():
     try:
         today = datetime.date.today().isoformat()
@@ -212,12 +199,14 @@ def main():
         level = "고평가" if info["premium"] > avg7 else "저평가"
         trend = "📈 상승세" if change > 0 else "📉 하락세"
         
+        # ⚠️ 메시지 내용에 ETF/주당 가격 및 괴리율임을 명시
         msg_data = (
-            f"📅 {today} 금 프리미엄 알림\n"
-            f"KRX 국내 금시세 (g): {info['korean']:,.0f}원\n"
+            f"📅 {today} ACE KRX금현물 ETF 괴리율 알림\n"
+            f"국내 ETF 시장가 (주당): {info['korean']:,.0f}원\n"
+            f"국제 금 환산가 (주당): {info['international_krw']:,.0f}원\n"
             f"국제 금시세 (oz): ${info['gold_usd']:,.2f}\n"
             f"환율: {info['usd_krw']:,.2f}원/$\n"
-            f"👉 금 프리미엄: {info['premium']:+.2f}% ({change:+.2f}% vs 전일)\n"
+            f"👉 ETF 괴리율: {info['premium']:+.2f}% ({change:+.2f}% vs 전일)\n"
             f"최근 7일 평균 대비: {level} ({avg7:.2f}%) {trend}"
         )
         
@@ -228,7 +217,7 @@ def main():
 
         graph_buf = create_graph(history)
         if graph_buf:
-            send_telegram_photo(graph_buf, caption="📈 최근 7일 금 프리미엄 추세")
+            send_telegram_photo(graph_buf, caption="📈 최근 7일 ETF 괴리율 추세")
 
     except Exception as e:
         try:
