@@ -14,7 +14,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# 필수 환경 변수 누락 시 즉시 종료
 if not BOT_TOKEN or not CHAT_ID:
     raise EnvironmentError("FATAL ERROR: TELEGRAM_BOT_TOKEN or CHAT_ID is not set in environment.")
 
@@ -51,23 +50,21 @@ def send_telegram_photo(image_bytes, caption=""):
     response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=10)
     response.raise_for_status()
 
-# ---------- 시세 수집 함수 (Yahoo Finance ETF 중심) ----------
-
-# 1. 국내 금 가격 대용: ACE KRX금현물 ETF 실시간 가격 (원/주)
-def get_korean_gold_proxy():
-    # ACE KRX금현물 종목코드 (가장 안정적인 실시간 국내 금 가격 대용)
-    symbol = "411060.KS" 
+# 1. 국내 금 가격 대용: ACE KRX금현물 ETF 실시간 가격 및 NAV (원/주)
+def get_korean_gold_data():
+    symbol = "411060.KS" # ACE KRX금현물 종목코드
     try:
         ticker = yf.Ticker(symbol)
         data = ticker.info
-        price = data.get('regularMarketPrice') # 현재 시장 가격 (원/주)
+        market_price = data.get('regularMarketPrice') # 현재 시장 가격 (원/주)
+        nav_price = data.get('navPrice')              # 순자산가치 (NAV)
         
-        if price is None:
-             raise ValueError(f"Yahoo Finance: '{symbol}'에 대한 실시간 시장 가격(regularMarketPrice) 데이터가 누락되었습니다.")
+        if market_price is None or nav_price is None:
+             raise ValueError(f"Yahoo Finance: '{symbol}'의 시장가 또는 NAV 데이터가 누락되었습니다.")
              
-        return price
+        return market_price, nav_price
     except Exception as e:
-        raise RuntimeError(f"KRX 골드 ETF 가격 조회 실패: {type(e).__name__} - {e}")
+        raise RuntimeError(f"KRX 골드 ETF 가격 및 NAV 조회 실패: {type(e).__name__} - {e}")
 
 # 2. Yahoo Finance 가격 조회 (기존과 동일)
 def get_yahoo_price(symbol):
@@ -83,23 +80,18 @@ def get_yahoo_price(symbol):
     except Exception as e:
         raise RuntimeError(f"Yahoo Finance '{symbol}' 데이터 조회 실패: {type(e).__name__} - {e}")
 
-# 3. 국제 금 시세 및 환율 가져오기
+# 3. 국제 금 시세 및 환율 가져오기 (NAV 기반으로 로직 변경)
 def get_gold_and_fx():
     usd_krw = get_yahoo_price("USDKRW=X") # 원/$
     gold_usd = get_yahoo_price("GC=F")    # 국제 금 선물 가격 ($/oz)
     
-    # 2. 국내 금 ETF 가격 (원/주)를 가져옵니다.
-    krx_gold_etf_krw = get_korean_gold_proxy() 
+    # ACE ETF 시장가와 NAV를 가져옵니다.
+    market_price, nav_price = get_korean_gold_data() 
     
-    # 3. 국제 금 시세를 국내 ETF 단위(KRW/주)로 환산합니다.
-    # ACE KRX금현물의 정확한 1주당 추종 비율(oz/share)은 공시를 확인해야 하나,
-    # 괴리율의 추이 분석을 위해 국제 가격 환산치를 구합니다. (0.001oz 추정치 유지)
-    oz_per_share_proxy = 0.001 
-    intl_krw_per_etf = gold_usd * oz_per_share_proxy * usd_krw 
+    # 국제 금 환산가 자리에 NAV 가격을 대입합니다. (정확한 비교 기준)
+    return market_price, nav_price, usd_krw, gold_usd
 
-    return krx_gold_etf_krw, intl_krw_per_etf, usd_krw, gold_usd
-
-# ---------- 데이터 처리 및 분석 (기존과 동일) ----------
+# ---------- 데이터 처리 및 분석 (로직 유지) ----------
 def load_history():
     if os.path.exists(DATA_FILE):
         try:
@@ -115,16 +107,16 @@ def save_history(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def calc_premium():
-    # krx_gold_etf_krw: 국내 ETF 시장 가격 (원/주)
-    # intl_krw_per_etf: 국제 금 시세 환산 NAV 가격 (원/주 환산)
-    krx_gold_etf_krw, intl_krw_per_etf, usd_krw, gold_usd = get_gold_and_fx()
+    # market_price: 국내 ETF 시장 가격 (원/주)
+    # nav_price: ETF의 이론적 가치 (NAV, 원/주)
+    market_price, nav_price, usd_krw, gold_usd = get_gold_and_fx()
     
-    # 프리미엄(괴리율) 계산
-    premium = (krx_gold_etf_krw / intl_krw_per_etf - 1) * 100 
+    # 괴리율 계산: (시장가 / NAV - 1) * 100
+    premium = (market_price / nav_price - 1) * 100 
     
     return {
-        "korean": krx_gold_etf_krw, # KRW/주 (국내 시장 가격)
-        "international_krw": intl_krw_per_etf, # KRW/주 환산 (국제 가격)
+        "korean": market_price, # KRW/주 (국내 시장 가격)
+        "international_krw": nav_price, # NAV 가격 (이론적 국제 환산가 역할)
         "usd_krw": usd_krw,
         "gold_usd": gold_usd,
         "premium": premium
@@ -139,7 +131,7 @@ def create_graph(history):
 
     plt.figure(figsize=(6, 3))
     plt.plot(dates, premiums, marker="o")
-    plt.title("ETF 괴리율 7일 추세 (%)") # 그래프 제목 수정
+    plt.title("ETF 괴리율 7일 추세 (%)")
     plt.ylabel("괴리율(%)")
     plt.xticks(rotation=45, ha='right')
     plt.grid(True, alpha=0.3)
@@ -199,11 +191,11 @@ def main():
         level = "고평가" if info["premium"] > avg7 else "저평가"
         trend = "📈 상승세" if change > 0 else "📉 하락세"
         
-        # ⚠️ 메시지 내용에 ETF/주당 가격 및 괴리율임을 명시
+        # ⚠️ 메시지 내용에 NAV를 명시하여 정확도를 높임
         msg_data = (
             f"📅 {today} ACE KRX금현물 ETF 괴리율 알림\n"
             f"국내 ETF 시장가 (주당): {info['korean']:,.0f}원\n"
-            f"국제 금 환산가 (주당): {info['international_krw']:,.0f}원\n"
+            f"ETF 기준가(NAV) (주당): {info['international_krw']:,.0f}원\n"
             f"국제 금시세 (oz): ${info['gold_usd']:,.2f}\n"
             f"환율: {info['usd_krw']:,.2f}원/$\n"
             f"👉 ETF 괴리율: {info['premium']:+.2f}% ({change:+.2f}% vs 전일)\n"
