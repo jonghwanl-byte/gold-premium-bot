@@ -5,16 +5,13 @@ import os
 import json
 import openai
 from urllib.parse import quote_plus
+from bs4 import BeautifulSoup  # BeautifulSoup 재도입
 import matplotlib.pyplot as plt
 from io import BytesIO
 import yfinance as yf 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+# from selenium import webdriver # Selenium 관련 모듈 모두 제거됨
+# from selenium.webdriver.chrome.service import Service as ChromeService
+# ... (나머지 Selenium 모듈 제거)
 
 # ---------- 환경 변수 및 초기 설정 ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -57,57 +54,33 @@ def send_telegram_photo(image_bytes, caption=""):
     response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=10)
     response.raise_for_status()
 
-# ---------- 시세 수집 함수 (Selenium 및 명시적 대기 적용) ----------
+# ---------- 시세 수집 함수 ----------
 
-# 1. KRX 국내 금 시세 (원/g) - Selenium 및 명시적 대기 사용
+# 1. KRX 국내 금 시세 (원/g) - 네이버 금융 스크래핑으로 전환
 def get_korean_gold():
-    url = "https://www.koreagoldx.co.kr/"
-    
-    # 1. Chrome 옵션 설정
-    chrome_options = ChromeOptions()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    # ⚠️ (수정) User-Agent 위장 (차단 회피 목적)
-    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    chrome_options.add_argument(f"user-agent={user_agent}")
-    
-    service = ChromeService() 
-    driver = None
+    # ⚠️ (최종 대안) 네이버 금융 KRX 금 시세 페이지 사용
+    url = "https://finance.naver.com/marketindex/goldDetail.naver" 
     
     try:
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.get(url)
-
-        # ⚠️ (핵심 수정) 명시적 대기 셀렉터 변경 및 대기 시간 증가
-        # #buy_price 대신 '금 1돈 살 때' 가격을 포함하는 안정적인 CSS 선택자 사용
-        NEW_SELECTOR = "div.gold_price_wrap dl:nth-child(2) em"
-
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, NEW_SELECTOR))
-        )
+        # 스크래핑 차단 방지를 위한 User-Agent 추가
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        response = requests.get(url, timeout=10, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
         
-        # 요소 찾기
-        gold_price_element = driver.find_element(By.CSS_SELECTOR, NEW_SELECTOR)
+        # 네이버 금융 KRX 금 시세 (1g 기준)를 나타내는 셀렉터
+        price_element = soup.select_one("div.content dd.data span.value")
         
-        price_per_don_text = gold_price_element.text.replace(",", "").strip()
+        if price_element is None:
+             raise ValueError("네이버 금융 페이지에서 KRX 금 시세 요소(div.content dd.data span.value)를 찾지 못했습니다.")
 
-        if not price_per_don_text or not price_per_don_text.isdigit():
-             raise ValueError(f"추출된 금 시세 값 '{price_per_don_text}'이(가) 유효한 숫자가 아닙니다.")
-             
-        price_per_don = float(price_per_don_text)
+        # 가격 텍스트에서 콤마 제거 후 실수로 변환 (Naver는 원/g 단위로 제공)
+        krx_gold_per_g = float(price_element.text.replace(",", "").strip())
         
-        return price_per_don / 3.75 # 원/g으로 환산
-
-    except TimeoutException:
-         # 15초 대기 시간 초과 시 오류 발생
-         raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): TimeoutException - 요소 로딩 시간 초과 (15초)")
-    except (NoSuchElementException, WebDriverException, ValueError) as e:
-        raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): {type(e).__name__} - {e}")
-    finally:
-        # WebDriver 리소스 해제
-        if driver:
-            driver.quit()
+        return krx_gold_per_g # 원/g
+        
+    except Exception as e:
+        raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (네이버 금융): {type(e).__name__} - {e}")
 
 # 2. Yahoo Finance 가격 조회 (기존과 동일)
 def get_yahoo_price(symbol):
@@ -130,7 +103,7 @@ def get_gold_and_fx():
     
     intl_krw_per_g = gold_usd * usd_krw / 31.1035
     
-    krx_gold_per_g = get_korean_gold() 
+    krx_gold_per_g = get_korean_gold() # 네이버 금융을 통해 국내 금 시세 가져오기
 
     return krx_gold_per_g, intl_krw_per_g, usd_krw, gold_usd
 
