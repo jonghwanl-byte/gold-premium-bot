@@ -3,11 +3,9 @@ name: Gold Premium AI Bot
 on:
   schedule:
     # 1. 평일 한국 시간 오전 8시 (KST) 실행 
-    # UTC 기준: 08:00 KST - 9시간 = 23:00 UTC (월요일~금요일, 1-5)
     - cron: '0 23 * * 1-5'
     
     # 2. 평일 한국 시간 오후 4시 30분 (KST) 실행
-    # UTC 기준: 16:30 KST - 9시간 = 7:30 UTC (월요일~금요일, 1-5)
     - cron: '30 7 * * 1-5'
     
   # 수동 실행을 위한 워크플로우 디스패치
@@ -16,7 +14,6 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    # 작업 환경의 시간대를 한국 시간(KST)으로 설정
     env:
       TZ: Asia/Seoul
     
@@ -28,20 +25,26 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          
+      # ⚠️ (추가) Selenium 사용을 위한 Chrome 브라우저 설치
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1 
+        with:
+          # ChromeDriver가 자동으로 설치됩니다.
+          chrome-version: stable
 
       - name: Install dependencies
         run: |
-          # requirements.txt를 사용하여 필요한 모든 라이브러리 설치
+          # 1. requirements.txt를 사용하여 필요한 모든 라이브러리 설치 (Selenium 포함)
           pip install -r requirements.txt
           
-          # matplotlib 설정 디렉터리 안전하게 생성
+          # 2. matplotlib 설정 디렉터리 안전하게 생성
           mkdir -p ~/.config/matplotlib/
           
-          # 그래프 생성을 위한 백엔드 설정 파일 생성
+          # 3. 그래프 생성을 위한 백엔드 설정 파일 생성
           echo "backend: agg" > ~/.config/matplotlib/matplotlibrc
 
       - name: Run Gold Premium Bot
-        # 환경 변수(Secret)를 설정하고 Python 스크립트를 실행합니다.
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
