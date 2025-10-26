@@ -26,12 +26,6 @@ jobs:
         with:
           python-version: '3.10'
           
-      # ⚠️ (수정) Selenium 관련 Chrome 설치 단계 삭제
-      # - name: Setup Chrome 
-      #   uses: browser-actions/setup-chrome@v1
-      #   with:
-      #     chrome-version: stable
-
       - name: Install dependencies
         run: |
           # 1. requirements.txt를 사용하여 필요한 모든 라이브러리 설치
