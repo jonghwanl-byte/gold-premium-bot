@@ -5,13 +5,10 @@ import os
 import json
 import openai
 from urllib.parse import quote_plus
-from bs4 import BeautifulSoup  # BeautifulSoup 재도입
+from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
 from io import BytesIO
 import yfinance as yf 
-# from selenium import webdriver # Selenium 관련 모듈 모두 제거됨
-# from selenium.webdriver.chrome.service import Service as ChromeService
-# ... (나머지 Selenium 모듈 제거)
 
 # ---------- 환경 변수 및 초기 설정 ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -56,25 +53,37 @@ def send_telegram_photo(image_bytes, caption=""):
 
 # ---------- 시세 수집 함수 ----------
 
-# 1. KRX 국내 금 시세 (원/g) - 네이버 금융 스크래핑으로 전환
+# 1. KRX 국내 금 시세 (원/g) - 네이버 금융 스크래핑으로 전환 및 2단계 셀렉터 검증 적용
 def get_korean_gold():
-    # ⚠️ (최종 대안) 네이버 금융 KRX 금 시세 페이지 사용
     url = "https://finance.naver.com/marketindex/goldDetail.naver" 
     
     try:
-        # 스크래핑 차단 방지를 위한 User-Agent 추가
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         response = requests.get(url, timeout=10, headers=headers)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         
-        # 네이버 금융 KRX 금 시세 (1g 기준)를 나타내는 셀렉터
-        price_element = soup.select_one("div.content dd.data span.value")
+        # 1단계 시도: 가장 일반적인 가격 값 셀렉터 (span.value)
+        price_element = soup.select_one("span.value")
         
         if price_element is None:
-             raise ValueError("네이버 금융 페이지에서 KRX 금 시세 요소(div.content dd.data span.value)를 찾지 못했습니다.")
+             # 2단계 시도: 상위 요소(dd.data)를 찾고 그 텍스트에서 가격만 추출
+             data_element = soup.select_one("dd.data")
+             if data_element:
+                 # dd.data의 텍스트를 공백으로 분리하여 첫 번째 요소를 가격으로 간주
+                 price_parts = data_element.get_text(separator=' ', strip=True).split()
+                 if price_parts:
+                     price_text = price_parts[0]
+                     # 추출된 텍스트가 가격 형태인지 확인 (콤마 제거 후 숫자 확인)
+                     clean_text = price_text.replace(',', '').replace('.', '')
+                     if clean_text.isdigit():
+                        krx_gold_per_g = float(price_text.replace(",", "").strip())
+                        return krx_gold_per_g
+             
+             # 두 가지 시도 모두 실패 시 오류 발생
+             raise ValueError("네이버 금융 페이지에서 KRX 금 시세 요소를 찾지 못했습니다. 구조가 변경되었거나 데이터가 없습니다.")
 
-        # 가격 텍스트에서 콤마 제거 후 실수로 변환 (Naver는 원/g 단위로 제공)
+        # 1단계 시도 성공 시 처리
         krx_gold_per_g = float(price_element.text.replace(",", "").strip())
         
         return krx_gold_per_g # 원/g
@@ -103,7 +112,7 @@ def get_gold_and_fx():
     
     intl_krw_per_g = gold_usd * usd_krw / 31.1035
     
-    krx_gold_per_g = get_korean_gold() # 네이버 금융을 통해 국내 금 시세 가져오기
+    krx_gold_per_g = get_korean_gold() 
 
     return krx_gold_per_g, intl_krw_per_g, usd_krw, gold_usd
 
