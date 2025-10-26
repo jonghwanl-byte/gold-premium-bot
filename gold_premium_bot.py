@@ -13,7 +13,6 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
-# ⚠️ (추가) 명시적 대기를 위한 모듈 임포트
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -64,10 +63,14 @@ def send_telegram_photo(image_bytes, caption=""):
 def get_korean_gold():
     url = "https://www.koreagoldx.co.kr/"
     
+    # 1. Chrome 옵션 설정
     chrome_options = ChromeOptions()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # ⚠️ (수정) User-Agent 위장 (차단 회피 목적)
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    chrome_options.add_argument(f"user-agent={user_agent}")
     
     service = ChromeService() 
     driver = None
@@ -76,13 +79,16 @@ def get_korean_gold():
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.get(url)
 
-        # ⚠️ (핵심 수정) 명시적 대기 적용: #buy_price ID를 가진 요소가 나타날 때까지 최대 10초 대기
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "buy_price"))
+        # ⚠️ (핵심 수정) 명시적 대기 셀렉터 변경 및 대기 시간 증가
+        # #buy_price 대신 '금 1돈 살 때' 가격을 포함하는 안정적인 CSS 선택자 사용
+        NEW_SELECTOR = "div.gold_price_wrap dl:nth-child(2) em"
+
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, NEW_SELECTOR))
         )
         
-        # 요소 찾기: 이제 요소가 존재하는 것이 보장된 후 찾습니다.
-        gold_price_element = driver.find_element(By.ID, "buy_price")
+        # 요소 찾기
+        gold_price_element = driver.find_element(By.CSS_SELECTOR, NEW_SELECTOR)
         
         price_per_don_text = gold_price_element.text.replace(",", "").strip()
 
@@ -94,8 +100,8 @@ def get_korean_gold():
         return price_per_don / 3.75 # 원/g으로 환산
 
     except TimeoutException:
-         # 10초 대기 시간 초과 시 오류 발생
-         raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): TimeoutException - #buy_price 요소 로딩 시간 초과 (10초)")
+         # 15초 대기 시간 초과 시 오류 발생
+         raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): TimeoutException - 요소 로딩 시간 초과 (15초)")
     except (NoSuchElementException, WebDriverException, ValueError) as e:
         raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): {type(e).__name__} - {e}")
     finally:
