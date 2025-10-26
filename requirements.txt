@@ -2,4 +2,5 @@ requests
 beautifulsoup4
 matplotlib
 openai
-yfinance # Yahoo Finance
+yfinance
+selenium # <--- Selenium 추가
