@@ -56,7 +56,7 @@ def send_telegram_photo(image_bytes, caption=""):
 
 # ---------- 시세 수집 함수 ----------
 
-# 1. KRX 국내 금 시세 (원/g) - 안정적인 스크래핑 유지
+# 1. KRX 국내 금 시세 (원/g) - 스크래핑 셀렉터 수정 반영
 def get_korean_gold():
     url = "https://www.koreagoldx.co.kr/"
     try:
@@ -64,50 +64,64 @@ def get_korean_gold():
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         
-        price_per_don = float(soup.select_one("#gold_price").text.replace(",", ""))
+        # ⚠️ (수정) 'NoneType' 오류 해결: ID가 아닌 클래스 기반 셀렉터로 변경 (웹사이트 구조 변경 대응)
+        # 1돈(3.75g) 살 때 가격을 포함하는 요소를 찾아야 합니다.
+        gold_price_element = soup.select_one("div.gold_price_wrap > div.info_price > ul > li:nth-child(2) > em")
+
+        if gold_price_element is None:
+             raise ValueError("KRX 금 시세 요소를 찾지 못했습니다. 웹사이트 셀렉터가 변경되었거나 구조가 바뀌었을 수 있습니다.")
+             
+        # 시세 텍스트에서 콤마 제거 후 실수로 변환
+        price_per_don = float(gold_price_element.text.replace(",", "").strip())
         
         return price_per_don / 3.75 # 원/g으로 환산
     except Exception as e:
         raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패: {e}")
 
-# 2. Yahoo Finance 가격 조회 (yfinance 사용)
+# 2. Yahoo Finance 가격 조회 (yfinance 사용) - 데이터 누락 처리 강화
 def get_yahoo_price(symbol):
     try:
-        # yfinance는 비공식 API를 사용하므로 요청 실패 시 재시도 로직을 자체적으로 가짐
         ticker = yf.Ticker(symbol)
         data = ticker.info
         price = data.get('regularMarketPrice')
         
         if price is None:
-             # data.get('regularMarketPrice')가 None일 경우
-            raise ValueError(f"Yahoo data is missing price for {symbol}")
-            
+             # (개선) 가격 데이터 누락 시 오류 메시지 구체화
+             raise ValueError(f"Yahoo Finance: '{symbol}'에 대한 실시간 시장 가격(regularMarketPrice) 데이터가 누락되었습니다.")
+             
         return price
     except Exception as e:
-        raise RuntimeError(f"Yahoo Finance {symbol} 데이터 조회 실패: {e}")
+        # 오류가 발생하면, 호출한 쪽(get_gold_and_fx)에서 처리할 수 있도록 명확한 RuntimeError 발생
+        raise RuntimeError(f"Yahoo Finance '{symbol}' 데이터 조회 실패: {e}")
 
 # 3. 국제 금 시세 및 환율 가져오기
 def get_gold_and_fx():
     # 1. Yahoo Finance를 통해 환율 및 국제 금 선물 가격을 가져옵니다.
     usd_krw = get_yahoo_price("USDKRW=X") # 원/$
-    gold_usd = get_yahoo_price("GC=F")     # 국제 금 선물 가격 ($/oz)
+    gold_usd = get_yahoo_price("GC=F")    # 국제 금 선물 가격 ($/oz)
     
     # 2. 국제 금 시세를 KRW/g으로 환산 (1oz = 31.1035g)
     intl_krw_per_g = gold_usd * usd_krw / 31.1035
     
     # 3. KRX 국내 금 시세 (원/g)를 가져옴
-    krx_gold_per_g = get_korean_gold() 
+    krx_gold_per_g = get_korean_gold()
 
     return krx_gold_per_g, intl_krw_per_g, usd_krw, gold_usd
 
 # ---------- 데이터 처리 및 분석 ----------
 def load_history():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            # 파일이 비어있거나 손상된 경우
+            return []
     return []
 
 def save_history(data):
+    # (개선) history는 최근 100개까지만 저장하여 파일 크기 관리
+    data = data[-100:]
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -127,7 +141,7 @@ def calc_premium():
     }
 
 def create_graph(history):
-    # matplotlib 설정은 yml 파일에서 이미 처리됨
+    # 최근 7일 데이터만 사용
     history = history[-7:]
     if len(history) < 2:
         return None
@@ -151,8 +165,8 @@ def create_graph(history):
 
 def analyze_with_ai(today_msg, history):
     if not openai_client:
-         return "AI 분석 오류: OpenAI 클라이언트 초기화 실패 (API 키 누락)"
-         
+          return "AI 분석 오류: OpenAI 클라이언트 초기화 실패 (API 키 누락)"
+          
     prompt = f"""
 다음은 최근 7일간의 금 프리미엄 데이터입니다.
 {json.dumps(history[-7:], ensure_ascii=False, indent=2)}
@@ -182,14 +196,23 @@ def main():
 
         # 2. 히스토리 관리
         history = load_history()
-        history.append({"date": today, "premium": round(info["premium"], 2)})
+        
+        # 오늘 날짜 데이터가 이미 있으면 업데이트 (재실행 대비)
+        if history and history[-1]["date"] == today:
+            history[-1] = {"date": today, "premium": round(info["premium"], 2)}
+        else:
+            history.append({"date": today, "premium": round(info["premium"], 2)})
+            
         save_history(history)
 
         # 3. 데이터 분석 및 메시지 구성
-        prev = history[-2]["premium"] if len(history) > 1 else info["premium"]
+        # 전일 데이터는 오늘 데이터 직전의 유효한 데이터로 찾음
+        prev_premium_data = [h for h in history if h["date"] != today]
+        prev = prev_premium_data[-1]["premium"] if prev_premium_data else info["premium"]
         change = info["premium"] - prev
+        
         last7 = [x["premium"] for x in history[-7:]]
-        avg7 = sum(last7)/len(last7)
+        avg7 = sum(last7)/len(last7) if last7 else 0
         level = "고평가" if info["premium"] > avg7 else "저평가"
         trend = "📈 상승세" if change > 0 else "📉 하락세"
         
@@ -216,7 +239,8 @@ def main():
     except Exception as e:
         # 최종 예외 처리: 모든 시세 수집 및 계산 오류를 여기서 포착
         try:
-            send_telegram_text(f"🔥 치명적인 오류 발생: {e}")
+            # 어떤 함수에서 오류가 발생했는지 명시
+            send_telegram_text(f"🔥 치명적인 오류 발생: {type(e).__name__} - {e}")
         except Exception as telegram_error:
             # 텔레그램 발송 자체가 실패하면 GitHub 로그에만 출력
             print(f"ERROR: 최종 오류 알림 발송 실패: {telegram_error}")
