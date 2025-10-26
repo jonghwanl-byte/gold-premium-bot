@@ -56,7 +56,7 @@ def send_telegram_photo(image_bytes, caption=""):
 
 # ---------- 시세 수집 함수 ----------
 
-# 1. KRX 국내 금 시세 (원/g) - 스크래핑 셀렉터 재수정 반영
+# 1. KRX 국내 금 시세 (원/g) - 스크래핑 셀렉터 재재수정 반영
 def get_korean_gold():
     url = "https://www.koreagoldx.co.kr/"
     try:
@@ -64,14 +64,21 @@ def get_korean_gold():
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         
-        # ⚠️ (재수정된 셀렉터) #buy_price ID는 1돈(3.75g) 살 때 가격을 나타냅니다.
-        gold_price_element = soup.select_one("#buy_price") 
+        # ⚠️ (재재수정된 셀렉터) ID 대신 div.info_price 내의 모든 <em> 태그를 가져옵니다.
+        price_elements = soup.select("div.info_price em") 
 
-        if gold_price_element is None:
-             raise ValueError("KRX 금 시세 요소(ID: #buy_price)를 찾지 못했습니다. 웹사이트 구조가 다시 변경되었을 수 있습니다.")
+        if not price_elements:
+             # 요소가 아예 없는 경우
+             raise ValueError("KRX 금 시세 요소('div.info_price em')를 찾지 못했습니다. 웹사이트 구조가 완전히 변경되었을 수 있습니다.")
              
-        # 시세 텍스트에서 콤마 제거 후 실수로 변환
-        price_per_don = float(gold_price_element.text.replace(",", "").strip())
+        # 첫 번째 <em> 태그의 텍스트를 1돈 가격으로 간주합니다.
+        price_per_don_text = price_elements[0].text.replace(",", "").strip()
+
+        # 추출된 값이 숫자인지 확인하는 로직 추가
+        if not price_per_don_text.isdigit():
+             raise ValueError(f"추출된 금 시세 값 '{price_per_don_text}'이(가) 유효한 숫자가 아닙니다. 웹사이트 데이터 오류.")
+             
+        price_per_don = float(price_per_don_text)
         
         return price_per_don / 3.75 # 원/g으로 환산
     except Exception as e:
