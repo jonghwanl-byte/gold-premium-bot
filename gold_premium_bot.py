@@ -56,7 +56,7 @@ def send_telegram_photo(image_bytes, caption=""):
 
 # ---------- 시세 수집 함수 ----------
 
-# 1. KRX 국내 금 시세 (원/g) - 스크래핑 셀렉터 수정 반영
+# 1. KRX 국내 금 시세 (원/g) - 스크래핑 셀렉터 재수정 반영
 def get_korean_gold():
     url = "https://www.koreagoldx.co.kr/"
     try:
@@ -64,19 +64,19 @@ def get_korean_gold():
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         
-        # ⚠️ (수정) 'NoneType' 오류 해결: ID가 아닌 클래스 기반 셀렉터로 변경 (웹사이트 구조 변경 대응)
-        # 1돈(3.75g) 살 때 가격을 포함하는 요소를 찾아야 합니다.
-        gold_price_element = soup.select_one("div.gold_price_wrap > div.info_price > ul > li:nth-child(2) > em")
+        # ⚠️ (재수정된 셀렉터) #buy_price ID는 1돈(3.75g) 살 때 가격을 나타냅니다.
+        gold_price_element = soup.select_one("#buy_price") 
 
         if gold_price_element is None:
-             raise ValueError("KRX 금 시세 요소를 찾지 못했습니다. 웹사이트 셀렉터가 변경되었거나 구조가 바뀌었을 수 있습니다.")
+             raise ValueError("KRX 금 시세 요소(ID: #buy_price)를 찾지 못했습니다. 웹사이트 구조가 다시 변경되었을 수 있습니다.")
              
         # 시세 텍스트에서 콤마 제거 후 실수로 변환
         price_per_don = float(gold_price_element.text.replace(",", "").strip())
         
         return price_per_don / 3.75 # 원/g으로 환산
     except Exception as e:
-        raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패: {e}")
+        # 오류가 발생하면, 호출한 쪽(get_gold_and_fx)에서 처리할 수 있도록 명확한 RuntimeError 발생
+        raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패: {type(e).__name__} - {e}")
 
 # 2. Yahoo Finance 가격 조회 (yfinance 사용) - 데이터 누락 처리 강화
 def get_yahoo_price(symbol):
@@ -92,7 +92,7 @@ def get_yahoo_price(symbol):
         return price
     except Exception as e:
         # 오류가 발생하면, 호출한 쪽(get_gold_and_fx)에서 처리할 수 있도록 명확한 RuntimeError 발생
-        raise RuntimeError(f"Yahoo Finance '{symbol}' 데이터 조회 실패: {e}")
+        raise RuntimeError(f"Yahoo Finance '{symbol}' 데이터 조회 실패: {type(e).__name__} - {e}")
 
 # 3. 국제 금 시세 및 환율 가져오기
 def get_gold_and_fx():
@@ -120,7 +120,7 @@ def load_history():
     return []
 
 def save_history(data):
-    # (개선) history는 최근 100개까지만 저장하여 파일 크기 관리
+    # history는 최근 100개까지만 저장하여 파일 크기 관리
     data = data[-100:]
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
