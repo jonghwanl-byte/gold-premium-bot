@@ -12,10 +12,9 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     
-    # 작업 실행 단계를 정의합니다.
     steps:
       - name: Checkout repository
-        # 저장소 코드를 runners(GitHub Actions 서버)로 가져옵니다.
+        # 저장소 코드를 가져옵니다.
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -25,18 +24,22 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        # Python 코드에서 필요한 모든 라이브러리를 설치합니다.
-        # [수정] yfinance 라이브러리를 추가하고, matplotlib 그래프 생성을 위한 백엔드를 설정합니다.
+        # [핵심 수정] 라이브러리 설치와 matplotlib 설정
         run: |
+          # 1. 필요한 모든 라이브러리 설치
           pip install requests beautifulsoup4 matplotlib openai yfinance
-          # matplotlib를 터미널 환경에서 사용하기 위해 백엔드를 설정합니다.
-          echo "backend: agg" > ~/.config/matplotlib/matplotlibrc
+          
+          # 2. matplotlib 설정 디렉터리 안전하게 생성
+          # '-p' 옵션으로 부모 디렉터리(.~/.config/matplotlib)까지 모두 생성
           mkdir -p ~/.config/matplotlib/
+          
+          # 3. 그래프 생성을 위한 백엔드 설정 파일 생성 (오류 해결)
+          echo "backend: agg" > ~/.config/matplotlib/matplotlibrc
 
       - name: Run Gold Premium Bot
         # 환경 변수(Secret)를 설정하고 Python 스크립트를 실행합니다.
         env:
-          # GitHub Secrets에 설정한 이름과 정확히 일치해야 합니다.
+          # GitHub Secrets에 설정한 이름과 일치해야 합니다.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
