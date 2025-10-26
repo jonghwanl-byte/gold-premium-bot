@@ -5,7 +5,6 @@ import os
 import json
 import openai
 from urllib.parse import quote_plus
-# from bs4 import BeautifulSoup # BeautifulSoup은 이제 KRX 스크래핑에 사용하지 않음
 import matplotlib.pyplot as plt
 from io import BytesIO
 import yfinance as yf 
@@ -14,6 +13,9 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+# ⚠️ (추가) 명시적 대기를 위한 모듈 임포트
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # ---------- 환경 변수 및 초기 설정 ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -56,39 +58,32 @@ def send_telegram_photo(image_bytes, caption=""):
     response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=10)
     response.raise_for_status()
 
-# ---------- 시세 수집 함수 (Selenium 적용) ----------
+# ---------- 시세 수집 함수 (Selenium 및 명시적 대기 적용) ----------
 
-# 1. KRX 국내 금 시세 (원/g) - Selenium 사용
+# 1. KRX 국내 금 시세 (원/g) - Selenium 및 명시적 대기 사용
 def get_korean_gold():
     url = "https://www.koreagoldx.co.kr/"
     
-    # 1. Chrome 옵션 설정 (GitHub Actions 환경을 위한 Headless 설정)
     chrome_options = ChromeOptions()
-    chrome_options.add_argument("--headless")              # GUI 없이 실행
-    chrome_options.add_argument("--no-sandbox")            # 리눅스 환경 필수
-    chrome_options.add_argument("--disable-dev-shm-usage") # 메모리 부족 문제 방지
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
     
-    # 2. WebDriver 경로 설정 (GitHub Actions의 setup-chrome 액션 사용)
     service = ChromeService() 
     driver = None
     
     try:
-        # 3. WebDriver 실행
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(30) # 페이지 로딩 타임아웃 30초
         driver.get(url)
 
-        # 4. 데이터 추출: 페이지가 로드되고 JavaScript가 실행되기를 기다린 후 #buy_price를 찾습니다.
-        # #buy_price ID가 다시 변경되었을 가능성을 고려하여, 대기 시간을 통해 페이지 로딩을 확실히 합니다.
-        time.sleep(5) # 5초 대기 (데이터 로딩 시간 확보)
-
-        # 5. 요소 찾기: 1돈(3.75g) 살 때 가격을 나타내는 #buy_price ID를 다시 시도합니다.
-        # Selenium은 CSS Selector 대신 XPath나 By.ID를 사용하는 것이 더 명확합니다.
+        # ⚠️ (핵심 수정) 명시적 대기 적용: #buy_price ID를 가진 요소가 나타날 때까지 최대 10초 대기
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "buy_price"))
+        )
+        
+        # 요소 찾기: 이제 요소가 존재하는 것이 보장된 후 찾습니다.
         gold_price_element = driver.find_element(By.ID, "buy_price")
         
-        if not gold_price_element:
-             raise NoSuchElementException("Selenium이 #buy_price 요소를 찾지 못했습니다.")
-
         price_per_don_text = gold_price_element.text.replace(",", "").strip()
 
         if not price_per_don_text or not price_per_don_text.isdigit():
@@ -98,11 +93,13 @@ def get_korean_gold():
         
         return price_per_don / 3.75 # 원/g으로 환산
 
-    except (NoSuchElementException, TimeoutException, WebDriverException, ValueError) as e:
-        # 모든 Selenium 관련 오류 및 값 오류 처리
+    except TimeoutException:
+         # 10초 대기 시간 초과 시 오류 발생
+         raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): TimeoutException - #buy_price 요소 로딩 시간 초과 (10초)")
+    except (NoSuchElementException, WebDriverException, ValueError) as e:
         raise RuntimeError(f"KRX 국내 금 시세 스크래핑 실패 (Selenium): {type(e).__name__} - {e}")
     finally:
-        # WebDriver는 반드시 닫아야 합니다. (리소스 해제)
+        # WebDriver 리소스 해제
         if driver:
             driver.quit()
 
@@ -127,7 +124,7 @@ def get_gold_and_fx():
     
     intl_krw_per_g = gold_usd * usd_krw / 31.1035
     
-    krx_gold_per_g = get_korean_gold() # Selenium을 통해 국내 금 시세 가져오기
+    krx_gold_per_g = get_korean_gold() 
 
     return krx_gold_per_g, intl_krw_per_g, usd_krw, gold_usd
 
