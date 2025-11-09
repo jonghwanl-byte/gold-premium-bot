@@ -3,10 +3,12 @@ name: Gold Premium AI Bot
 on:
   schedule:
     # 1. 평일 한국 시간 오전 8시 (KST) 실행 
-    - cron: '0 23 * * 1-5'
+    # (참고: UTC 23시는 KST 08시입니다. 1-5는 월~금입니다.)
+    - cron: '0 23 * * 0-4' # ⚠️ 참고: KST 월~금 08시는 UTC 일~목 23시입니다. (0-4)
     
     # 2. 평일 한국 시간 오후 4시 30분 (KST) 실행
-    - cron: '30 7 * * 1-5'
+    # (참고: UTC 07:30은 KST 16:30입니다.)
+    - cron: '30 7 * * 1-5' # ⚠️ 참고: KST 월~금 16:30은 UTC 월~금 07:30입니다. (1-5)
     
   # 수동 실행을 위한 워크플로우 디스패치
   workflow_dispatch:
@@ -16,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Seoul
-    
+      
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,8 +40,9 @@ jobs:
           echo "backend: agg" > ~/.config/matplotlib/matplotlibrc
 
       - name: Run Gold Premium Bot
+        # ⚠️ (수정) env 변수명을 secrets 이름과 통일
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python gold_premium_bot.py
+        run: python daily_signal_generator.py
