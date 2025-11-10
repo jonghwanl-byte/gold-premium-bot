@@ -23,7 +23,7 @@ except Exception:
     openai_client = None
 
 DATA_FILE = "gold_premium_history.json"
-TROY_OUNCE_TO_GRAM = 31.1035  # 1 트로이 온스 = 31.1035 그램
+TROY_Ounce_TO_GRAM = 31.1035  # 1 트로이 온스 = 31.1035 그램
 
 # ---------- 헬퍼 함수: Unix 타임스탬프를 KST 문자열로 변환 ----------
 def timestamp_to_kst(timestamp):
@@ -40,7 +40,6 @@ def timestamp_to_kst(timestamp):
 # ---------- 텔레그램 함수 ----------
 def send_telegram_text(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    # (수정) 한글 깨짐 문제 해결: quote_plus 제거, json 페이로드로 원본 msg 전송
     payload = {"chat_id": CHAT_ID, "text": msg}
 
     try:
@@ -57,24 +56,26 @@ def send_telegram_text(msg):
 
 def send_telegram_photo(image_bytes, caption=""):
     files = {"photo": image_bytes}
-    # (수정) 한글 깨짐 문제 해결: quote_plus 제거, data 페이로드로 원본 caption 전송
     data = {"chat_id": CHAT_ID, "caption": caption}
     
     response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=10)
     response.raise_for_status()
 
-# 1. 국내 금 가격 (KODEX KRX금현물 ETF, 0.1g 추종)
+# 1. 국내 금 가격 (ACE KRX금현물 ETF, 1g 추종)
 def get_korean_gold_data():
-    symbol = "132030.KS"  # (수정) 0.1g 추종 KODEX 코드로 변경
+    symbol = "411060.KS"  # ⚠️ (수정) 1g 추종 ACE 코드로 변경
     try:
         ticker = yf.Ticker(symbol)
         data = ticker.info
         
-        market_price = data.get('regularMarketPrice')
-        market_time = data.get('regularMarketTime')
+        # yfinance API의 'regularMarketPrice'가 비정상일 수 있으므로
+        # 안정적인 'previousClose' (전일 종가)를 우선 사용합니다.
+        market_price = data.get('previousClose')
+        market_time = data.get('regularMarketTime') # 시간은 참고용으로만 사용
         
+        # 'previousClose'가 없는 경우에만 'regularMarketPrice' 시도
         if market_price is None:
-            market_price = data.get('previousClose')
+            market_price = data.get('regularMarketPrice')
             
         if market_price is None:
             raise ValueError(f"Yahoo Finance: '{symbol}'의 유효한 시장 가격을 찾을 수 없습니다.")
@@ -122,34 +123,31 @@ def save_history(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# (핵심 수정) calc_premium: 이론적 NAV를 0.1g 기준으로 계산
+# (핵심) calc_premium: 이론적 NAV를 1g 기준으로 계산
 def calc_premium():
     """
-    국제 금 시세와 환율을 기준으로 0.1g 이론적 NAV를 계산하고,
-    국내 0.1g 추종 ETF 시장 가격과 비교하여 프리미엄(괴리율)을 계산합니다.
+    국제 금 시세와 환율을 기준으로 1g 이론적 NAV를 계산하고,
+    국내 1g 추종 ETF 시장 가격과 비교하여 프리미엄(괴리율)을 계산합니다.
     """
     market_price, usd_krw, gold_usd, market_time = get_gold_and_fx_data()
     
     # 1. 국제 금 1g당 달러 가격 계산
-    gold_usd_per_gram = gold_usd / TROY_OUNCE_TO_GRAM
+    gold_usd_per_gram = gold_usd / TROY_Ounce_TO_GRAM
     
-    # 2. 국제 금 1g당 원화 가격 계산
+    # 2. 국제 금 1g당 원화 가격 계산 (이것이 "이론적 NAV")
     theoretical_nav_1g = gold_usd_per_gram * usd_krw
     
-    # 3. (수정) 0.1g당 원화 가격으로 변환 (이것이 "이론적 NAV")
-    theoretical_nav_0_1g = theoretical_nav_1g / 10.0
-    
-    # 4. 프리미엄(괴리율) 계산: (실제 시장가 / 0.1g 이론적 NAV) - 1
-    premium = (market_price / theoretical_nav_0_1g - 1) * 100
+    # 3. 프리미엄(괴리율) 계산: (실제 시장가 / 1g 이론적 NAV) - 1
+    premium = (market_price / theoretical_nav_1g - 1) * 100
     
     return {
         "korean": market_price,           # 국내 ETF 시장가 (원)
-        "international_krw": theoretical_nav_0_1g, # 국제 금 0.1g 이론가 (원)
+        "international_krw": theoretical_nav_1g, # 국제 금 1g 이론가 (원)
         "usd_krw": usd_krw,                # 환율 (원/달러)
         "gold_usd": gold_usd,              # 국제 금 (달러/온스)
         "premium": premium,              # 괴리율 (%)
         "market_time": market_time,        # ETF 시장 시간
-        "warning_msg": "✅ 0.1g 이론적 NAV 기준 계산" # 0.1g 기준으로 변경
+        "warning_msg": "✅ 1g 이론적 NAV 기준 (전일 종가 기준)" 
     }
 
 def create_graph(history):
@@ -178,13 +176,13 @@ def analyze_with_ai(today_msg, history):
         return "AI 분석 오류: OpenAI 클라이언트 초기화 실패 (API 키 누락)"
             
     prompt = f"""
-다음은 최근 7일간의 KODEX KRX금현물 ETF 괴리율 데이터입니다. (괴리율 = (국내 ETF 가격 / 국제 금 0.1g 원화환산가) - 1)
+다음은 최근 7일간의 ACE KRX금현물 ETF 괴리율 데이터입니다. (괴리율 = (국내 ETF 가격 / 국제 금 1g 원화환산가) - 1)
 {json.dumps(history[-7:], ensure_ascii=False, indent=2)}
 
 오늘의 주요 데이터:
 {today_msg}
 
-이 데이터를 기반으로 KODEX KRX금현물 ETF의 괴리율(프리미엄) 상승/하락 원인과 간단한 투자 관점 요약을 3줄 이내로 설명해줘.
+이 데이터를 기반으로 ACE KRX금현물 ETF의 괴리율(프리미엄) 상승/하락 원인과 간단한 투자 관점 요약을 3줄 이내로 설명해줘.
 """
     try:
         response = openai_client.chat.completions.create(
@@ -196,7 +194,7 @@ def analyze_with_ai(today_msg, history):
     except Exception as e:
         return f"AI 분석 오류: {e}"
 
-# (핵심 수정) main: 'premium is None' 분기 제거 및 텍스트 수정
+# (핵심 수정) main: 텍스트 ACE 기준으로 수정
 def main():
     try:
         today = datetime.date.today().isoformat()
@@ -207,8 +205,6 @@ def main():
         current_premium = info["premium"]
         change = 0.0
         final_timestamp = info["market_time"]
-        
-        # (수정) 'premium is None' 분기 로직 제거
         
         # 유효한 현재 데이터만 히스토리에 저장
         if history and history[-1]["date"] == today:
@@ -230,18 +226,16 @@ def main():
         # 최종 집계 시간 문자열 생성
         if isinstance(final_timestamp, int):
             time_str = f"실시간 ({timestamp_to_kst(final_timestamp)})"
-        elif isinstance(final_timestamp, str):
-            time_str = f"최근 기록 ({final_timestamp})"
         else:
             time_str = f"현재 ({datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S KST')})"
             
-        # 텔레그램 메시지 구성 (KODEX 및 0.1g 기준으로 텍스트 수정)
+        # 텔레그램 메시지 구성 (ACE 및 1g 기준으로 텍스트 수정)
         msg_data = (
-            f"📅 {today} KODEX KRX금현물 ETF 괴리율 알림\n"
+            f"📅 {today} ACE KRX금현물 ETF 괴리율 알림\n"
             f"기준 일시: {time_str}\n"
             f"{info['warning_msg']}\n"
             f"국내 ETF 시장가 (주당): {info['korean']:,.0f}원\n"
-            f"국제 금 0.1g 이론가 (NAV): {info['international_krw']:,.0f}원\n"
+            f"국제 금 1g 이론가 (NAV): {info['international_krw']:,.0f}원\n"
             f"국제 금시세 (oz): ${info['gold_usd']:,.2f}\n"
             f"환율: {info['usd_krw']:,.2f}원/$\n"
             f"👉 ETF 괴리율: {info['premium']:+.2f}% ({change:+.2f}% vs 전일)\n"
@@ -259,9 +253,8 @@ def main():
 
     except Exception as e:
         try:
-            # (수정) 오류 발생 시 traceback을 포함하여 디버깅 용이
             error_msg = f"🔥 치명적인 오류 발생: {type(e).__name__} - {e}\n\n{traceback.format_exc()}"
-            send_telegram_text(error_msg[:4000]) # 텔레그램 최대 길이 제한
+            send_telegram_text(error_msg[:4000])
         except Exception as telegram_error:
             print(f"ERROR: 최종 오류 알림 발송 실패: {telegram_error}")
             print(f"Original Exception: {e}")
